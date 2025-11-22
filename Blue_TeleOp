@@ -34,7 +34,7 @@ public class BLUE extends LinearOpMode {
 
     // Mechanism powers
     private static final double INTAKE_POWER  = 1.0;
-    private static final double TURRET_MANUAL_POWER = 0.6;
+    private static final double TURRET_MANUAL_POWER = 0.25;  // CHANGED: reduced from 0.6 to 0.25
     private static final double TRIGGER_THRESH = 0.5;
 
     // Turret auto-tracking
@@ -48,7 +48,7 @@ public class BLUE extends LinearOpMode {
     // Your measured max velocity at full power
     private static final double MAX_VELOCITY = 2000;
 
-    // Shooter speed (adjustable from 0.0 to 1.0) - CHANGED: default is now 0.5
+    // Shooter speed (adjustable from 0.0 to 1.0)
     private double shooterSpeed = 0.5;
 
     // Target velocities
@@ -64,7 +64,7 @@ public class BLUE extends LinearOpMode {
 
     // Intake state machine
     private enum IntakeState { OFF, FORWARD, REVERSE }
-    private IntakeState intakeState = IntakeState.OFF;
+    private IntakeState intakeState = IntakeState.FORWARD;  // CHANGED: start in FORWARD state
     private boolean prevRB1 = false;
     private boolean prevLB1 = false;
 
@@ -74,7 +74,7 @@ public class BLUE extends LinearOpMode {
     private boolean gateMoving = false;
 
     // Shooter management
-    private boolean shootersOn = false;
+    private boolean shootersOn = true;  // CHANGED: start with shooters ON
     private boolean prevRT1 = false;
     private boolean prevLT1 = false;
 
@@ -141,23 +141,29 @@ public class BLUE extends LinearOpMode {
         shooter1.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         shooter2.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
 
-        // Ensure mechanisms are stopped on init
-        intake.setPower(0);
+        // CHANGED: Start intake and shooters immediately
+        intake.setPower(INTAKE_POWER);
         turret.setPower(0);
-        shooter1.setPower(0);
-        shooter2.setPower(0);
         gate.setPosition(0.0);
 
-        telemetry.addLine("BLUE - Updated Controls");
+        telemetry.addLine("BLUE - Auto-Start Mode");
         telemetry.addLine("GP1: RB=intake cycle, LB=stop, A=gate pulse");
         telemetry.addLine("GP1: RT=shooters on, LT=shooters off");
-        telemetry.addLine("GP2: RB/LB=manual turret, A/B=speed adjust");
-        telemetry.addLine("Default shooter speed: 0.47");
+        telemetry.addLine("GP2: RB/LB=manual turret (0.25 power), A/B=speed adjust");
+        telemetry.addLine("Shooters & Intake START AUTOMATICALLY!");
         telemetry.update();
 
         waitForStart();
         limelight.start();
         pidTimer.reset();
+
+        // CHANGED: Initialize shooters to start spinning immediately
+        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+        integralSum1 = 0;
+        integralSum2 = 0;
+        lastError1 = 0;
+        lastError2 = 0;
 
         while (opModeIsActive()) {
             // =======================
@@ -285,9 +291,9 @@ public class BLUE extends LinearOpMode {
                 boolean lb2 = gamepad2.left_bumper;
 
                 if (rb2) {
-                    turretCmd = TURRET_MANUAL_POWER;  // Rotate right
+                    turretCmd = TURRET_MANUAL_POWER;  // Rotate right (0.25 power)
                 } else if (lb2) {
-                    turretCmd = -TURRET_MANUAL_POWER; // Rotate left
+                    turretCmd = -TURRET_MANUAL_POWER; // Rotate left (0.25 power)
                 }
             }
 
