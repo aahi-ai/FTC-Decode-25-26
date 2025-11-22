@@ -297,8 +297,8 @@ public class RedAuto extends OpMode {
                     .build();
 
             Path11 = follower.pathBuilder()
-                    .addPath(new BezierLine(new Pose(100.486, 115.963), new Pose(71.551, 113.720)))
-                    .setLinearHeadingInterpolation(Math.toRadians(180), Math.toRadians(180))
+                    .addPath(new BezierLine(new Pose(100.486, 115.963), new Pose(115.514, 70.430)))
+                    .setLinearHeadingInterpolation(Math.toRadians(180), Math.toRadians(90))
                     .build();
         }
     }
