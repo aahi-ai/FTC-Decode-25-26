@@ -329,9 +329,9 @@ public class BlueAuto extends OpMode {
             Path11 = follower
                     .pathBuilder()
                     .addPath(
-                            new BezierLine(new Pose(42.393, 101.159), new Pose(71.776, 125.607))
+                            new BezierLine(new Pose(42.393, 101.159), new Pose(29.607, 70.205))
                     )
-                    .setLinearHeadingInterpolation(Math.toRadians(0), Math.toRadians(0))
+                    .setLinearHeadingInterpolation(Math.toRadians(0), Math.toRadians(90))
                     .build();
         }
     }
