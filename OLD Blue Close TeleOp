@@ -1,0 +1,566 @@
+package org.firstinspires.ftc.teamcode.pedroPathing;
+
+import com.qualcomm.hardware.limelightvision.LLResult;
+import com.qualcomm.hardware.limelightvision.Limelight3A;
+import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
+import com.qualcomm.robotcore.hardware.IMU;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.ElapsedTime;
+
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.YawPitchRollAngles;
+
+@TeleOp(name="BLUE_TeleOp_CLOSE", group="TeleOp")
+public class BLUE_TeleOp_CLOSE extends LinearOpMode {
+
+    // Drivetrain motors
+    private DcMotor leftFront, rightFront, leftBack, rightBack;
+
+    // Mechanisms
+    private DcMotor intake;
+    private DcMotor turret;
+    private DcMotorEx shooter1, shooter2;
+    private Servo gate;
+
+    // Limelight and IMU
+    private Limelight3A limelight;
+    private IMU imu;
+
+    // Drive max speed (0.0 to 1.0)
+    private static final double MAX_SPEED = 1.0;
+
+    // Mechanism powers
+    private static final double INTAKE_POWER  = 1.0;
+    private static final double TURRET_MANUAL_POWER = 0.45;
+    private static final double TRIGGER_THRESH = 0.5;
+
+    // Turret auto-tracking
+    private static final double DEADZONE = 2.0;
+
+    // IMU compensation
+    private double lastYaw = 0.0;
+    private static final double YAW_COMPENSATION_GAIN = 1.0;
+
+    // PID Constants
+    private static final double Kp = 0.003;
+    private static final double Ki = 0.0008;
+    private static final double Kd = 0.0001;
+
+    // Your measured max velocity at full power
+    private static final double MAX_VELOCITY = 2000;
+
+    // NEW FOV-based shooter speed calculation constants
+    // Formula: y = 0.0122547x^4 - 0.110119x^3 + 0.357647x^2 - 0.536579x + 0.832246
+    private static final double FOV_C4 = 0.0122547;
+    private static final double FOV_C3 = -0.110119;
+    private static final double FOV_C2 = 0.357647;
+    private static final double FOV_C1 = -0.536579;
+    private static final double FOV_C0 = 0.832246;
+
+    // Minimum and maximum FOV percentage to clamp input
+    private static final double MIN_FOV = 0.0;
+    private static final double MAX_FOV = 100.0;
+
+    // Shooter speed (adjustable from 0.0 to 1.0)
+    private double shooterSpeed = 0.5;
+
+    // Maximum allowed shooter speed (hard cap)
+    private static final double MAX_SHOOTER_SPEED = 0.58;
+
+    // Manual speed override
+    private boolean manualSpeedMode = false;
+
+    // Target velocities
+    private double targetVelocity1 = 0;
+    private double targetVelocity2 = 0;
+
+    // PID variables
+    private double integralSum1 = 0;
+    private double integralSum2 = 0;
+    private double lastError1 = 0;
+    private double lastError2 = 0;
+    private ElapsedTime pidTimer = new ElapsedTime();
+
+    // Intake state machine
+    private enum IntakeState { OFF, FORWARD, REVERSE }
+    private IntakeState intakeState = IntakeState.FORWARD;
+    private boolean prevRB1 = false;
+    private boolean prevLB1 = false;
+
+    // Gate servo management
+    private boolean prevA1 = false;
+    private ElapsedTime gateTimer = new ElapsedTime();
+    private boolean gateMoving = false;
+
+    // Shooter management
+    private boolean shootersOn = true;
+    private boolean prevRT1 = false;
+    private boolean prevLT1 = false;
+
+    // Gamepad 2 controls
+    private boolean prevA2 = false;
+    private boolean prevB2 = false;
+    private boolean prevX2 = false;
+    private boolean prevY2 = false;
+    private boolean prevDpadUp2 = false;
+    private boolean prevDpadDown2 = false;
+
+    @Override
+    public void runOpMode() {
+
+        // Initialize drive motors
+        leftBack = hardwareMap.get(DcMotor.class, "leftBack");
+        leftFront = hardwareMap.get(DcMotor.class, "leftFront");
+        rightBack = hardwareMap.get(DcMotor.class, "rightBack");
+        rightFront = hardwareMap.get(DcMotor.class, "rightFront");
+
+        // Initialize mechanisms (use DcMotorEx for velocity control)
+        intake   = hardwareMap.get(DcMotor.class, "intake");
+        turret   = hardwareMap.get(DcMotor.class, "turret");
+        shooter1 = hardwareMap.get(DcMotorEx.class, "shooter1");
+        shooter2 = hardwareMap.get(DcMotorEx.class, "shooter2");
+        gate     = hardwareMap.get(Servo.class, "gate");
+
+        // Initialize Limelight
+        limelight = hardwareMap.get(Limelight3A.class, "limelight");
+        limelight.pipelineSwitch(1);
+
+        // Initialize IMU
+        imu = hardwareMap.get(IMU.class, "imu");
+        RevHubOrientationOnRobot revHubOrientationOnRobot = new RevHubOrientationOnRobot(
+                RevHubOrientationOnRobot.LogoFacingDirection.RIGHT,
+                RevHubOrientationOnRobot.UsbFacingDirection.UP);
+        imu.initialize(new IMU.Parameters(revHubOrientationOnRobot));
+
+        // Directions
+        leftFront.setDirection(DcMotor.Direction.FORWARD);
+        leftBack.setDirection(DcMotor.Direction.REVERSE);
+        rightFront.setDirection(DcMotor.Direction.REVERSE);
+        rightBack.setDirection(DcMotor.Direction.FORWARD);
+
+        intake.setDirection(DcMotor.Direction.FORWARD);
+        turret.setDirection(DcMotor.Direction.FORWARD);
+        shooter1.setDirection(DcMotor.Direction.REVERSE);
+        shooter2.setDirection(DcMotor.Direction.FORWARD);
+
+        // Brake mode for better control
+        leftFront.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        rightFront.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        leftBack.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        rightBack.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+
+        intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        shooter1.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        shooter2.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+
+        // Motor modes
+        intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        turret.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        // Shooters use encoders for PID velocity control
+        shooter1.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        shooter2.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        shooter1.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        shooter2.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+
+        // Initialize gate servo position and motors OFF during init
+        gate.setPosition(0.0);
+        intake.setPower(0);
+        turret.setPower(0);
+        shooter1.setPower(0);
+        shooter2.setPower(0);
+
+        telemetry.addLine("BLUE - Polynomial FOV-Based Shooter Control");
+        telemetry.addLine("Shooter speed auto-adjusts based on AprilTag FOV!");
+        telemetry.addLine("MAX SHOOTER SPEED CAPPED AT 0.58");
+        telemetry.addLine("GP1: RB=intake cycle, LB=stop, A=gate pulse");
+        telemetry.addLine("GP1: RT=shooters on, LT=shooters off");
+        telemetry.addLine("GP2: RB/LB=manual turret");
+        telemetry.addLine("GP2: A=0.5 speed, B=0.7 speed, X=+0.01, Y=-0.01");
+        telemetry.addLine("GP2: D-Up=Auto Mode, D-Down=Manual Mode");
+        telemetry.addLine();
+        telemetry.addLine(">>> READY - Press Play to Start <<<");
+        telemetry.update();
+
+        waitForStart();
+
+        // Start intake and shooters IMMEDIATELY after play is pressed
+        intake.setPower(INTAKE_POWER);
+        limelight.start();
+        pidTimer.reset();
+
+        // Initialize IMU tracking
+        YawPitchRollAngles initialOrientation = imu.getRobotYawPitchRollAngles();
+        lastYaw = initialOrientation.getYaw(AngleUnit.DEGREES);
+
+        // Initialize shooters to start spinning immediately (capped at MAX_SHOOTER_SPEED)
+        shooterSpeed = Math.min(shooterSpeed, MAX_SHOOTER_SPEED);
+        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+        integralSum1 = 0;
+        integralSum2 = 0;
+        lastError1 = 0;
+        lastError2 = 0;
+
+        while (opModeIsActive()) {
+            // =======================
+            // Drivetrain (gamepad1)
+            // =======================
+            double drive = gamepad1.left_stick_y;
+            double strafe = gamepad1.left_stick_x;
+            double turn = -gamepad1.right_stick_x;
+
+            double leftFrontPower = drive + strafe + turn;
+            double rightFrontPower = drive - strafe - turn;
+            double leftBackPower = drive - strafe + turn;
+            double rightBackPower = drive + strafe - turn;
+
+            double max = Math.max(1.0, Math.max(Math.max(
+                            Math.abs(leftFrontPower), Math.abs(rightFrontPower)),
+                    Math.max(Math.abs(leftBackPower), Math.abs(rightBackPower))));
+
+            leftFront.setPower((leftFrontPower / max) * MAX_SPEED);
+            rightFront.setPower((rightFrontPower / max) * MAX_SPEED);
+            leftBack.setPower((leftBackPower / max) * MAX_SPEED);
+            rightBack.setPower((rightBackPower / max) * MAX_SPEED);
+
+            // =======================
+            // Intake (gamepad1 bumpers)
+            // =======================
+            boolean rb1 = gamepad1.right_bumper;
+            boolean lb1 = gamepad1.left_bumper;
+
+            // Right bumper cycles through intake states
+            if (rb1 && !prevRB1) {
+                switch (intakeState) {
+                    case OFF:
+                        intakeState = IntakeState.FORWARD;
+                        break;
+                    case FORWARD:
+                        intakeState = IntakeState.REVERSE;
+                        break;
+                    case REVERSE:
+                        intakeState = IntakeState.FORWARD;
+                        break;
+                }
+                applyIntakePower();
+            }
+
+            // Left bumper stops intake
+            if (lb1 && !prevLB1) {
+                intakeState = IntakeState.OFF;
+                applyIntakePower();
+            }
+
+            prevRB1 = rb1;
+            prevLB1 = lb1;
+
+            // =======================
+            // Gate servo pulse (gamepad1.a)
+            // =======================
+            boolean a1 = gamepad1.a;
+
+            if (a1 && !prevA1 && !gateMoving) {
+                gate.setPosition(1.0);
+                gateTimer.reset();
+                gateMoving = true;
+            }
+
+            // Return gate to position 0 after 1.5 seconds
+            if (gateMoving && gateTimer.seconds() >= 1.5) {
+                gate.setPosition(0.0);
+                gateMoving = false;
+            }
+
+            prevA1 = a1;
+
+            // =======================
+            // Shooters (gamepad1 triggers)
+            // =======================
+            boolean rt1 = gamepad1.right_trigger > TRIGGER_THRESH;
+            boolean lt1 = gamepad1.left_trigger > TRIGGER_THRESH;
+
+            // Start shooters with right trigger (capped at MAX_SHOOTER_SPEED)
+            if (rt1 && !prevRT1) {
+                shootersOn = true;
+                shooterSpeed = Math.min(shooterSpeed, MAX_SHOOTER_SPEED);
+                targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                integralSum1 = 0;
+                integralSum2 = 0;
+                lastError1 = 0;
+                lastError2 = 0;
+                pidTimer.reset();
+            }
+
+            // Stop shooters with left trigger
+            if (lt1 && !prevLT1) {
+                shootersOn = false;
+                shooter1.setPower(0);
+                shooter2.setPower(0);
+                targetVelocity1 = 0;
+                targetVelocity2 = 0;
+            }
+
+            prevRT1 = rt1;
+            prevLT1 = lt1;
+
+            // =======================
+            // TURRET CONTROL (IMU Compensation + Auto Tracking)
+            // =======================
+            YawPitchRollAngles orientation = imu.getRobotYawPitchRollAngles();
+            double currentYaw = orientation.getYaw(AngleUnit.DEGREES);
+
+            // Calculate yaw change (how much robot has rotated)
+            double yawChange = currentYaw - lastYaw;
+
+            // Handle wraparound (e.g., 179° to -179°)
+            if (yawChange > 180) {
+                yawChange -= 360;
+            } else if (yawChange < -180) {
+                yawChange += 360;
+            }
+
+            lastYaw = currentYaw;
+
+            limelight.updateRobotOrientation(orientation.getYaw());
+            LLResult llResult = limelight.getLatestResult();
+
+            boolean tagDetected = (llResult != null && llResult.isValid());
+            double turretCmd = 0.0;
+            double fovPercentage = 0.0;
+
+            if (tagDetected) {
+                // AprilTag detected: use vision tracking
+                double tx = llResult.getTx();
+                fovPercentage = llResult.getTa();  // Get FOV percentage
+
+                turretCmd = tx * 0.03;
+                turretCmd = Math.max(-0.6, Math.min(0.6, turretCmd));
+                if (Math.abs(tx) < DEADZONE) {
+                    turretCmd = 0;
+                }
+
+                // Calculate shooter speed based on FOV if in auto mode (capped at MAX_SHOOTER_SPEED)
+                if (!manualSpeedMode && shootersOn) {
+                    shooterSpeed = Math.min(calculateShooterSpeed(fovPercentage), MAX_SHOOTER_SPEED);
+                    targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                    targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                }
+            } else {
+                // No AprilTag: Counter-rotate based on robot rotation
+                turretCmd = -yawChange * YAW_COMPENSATION_GAIN;
+                turretCmd = Math.max(-0.6, Math.min(0.6, turretCmd));
+
+                // Allow manual override with gamepad2
+                boolean rb2 = gamepad2.right_bumper;
+                boolean lb2 = gamepad2.left_bumper;
+
+                if (rb2) {
+                    turretCmd = TURRET_MANUAL_POWER;  // Rotate right
+                } else if (lb2) {
+                    turretCmd = -TURRET_MANUAL_POWER; // Rotate left
+                }
+            }
+
+            turret.setPower(turretCmd);
+
+            // =======================
+            // Speed Mode Toggle (gamepad2 D-pad)
+            // =======================
+            boolean dpadUp2 = gamepad2.dpad_up;
+            boolean dpadDown2 = gamepad2.dpad_down;
+
+            // D-pad Up: Enable auto FOV-based mode
+            if (dpadUp2 && !prevDpadUp2) {
+                manualSpeedMode = false;
+            }
+
+            // D-pad Down: Enable manual speed mode
+            if (dpadDown2 && !prevDpadDown2) {
+                manualSpeedMode = true;
+            }
+
+            prevDpadUp2 = dpadUp2;
+            prevDpadDown2 = dpadDown2;
+
+            // =======================
+            // Manual Speed Adjustment (gamepad2) - Only in manual mode (capped at MAX_SHOOTER_SPEED)
+            // =======================
+            boolean a2 = gamepad2.a;
+            boolean b2 = gamepad2.b;
+            boolean x2 = gamepad2.x;
+            boolean y2 = gamepad2.y;
+
+            if (manualSpeedMode) {
+                // A button: Set shooter speed to 0.5 (capped)
+                if (a2 && !prevA2) {
+                    shooterSpeed = Math.min(0.5, MAX_SHOOTER_SPEED);
+                    if (shootersOn) {
+                        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                    }
+                }
+
+                // B button: Set shooter speed to 0.7 (capped)
+                if (b2 && !prevB2) {
+                    shooterSpeed = Math.min(0.7, MAX_SHOOTER_SPEED);
+                    if (shootersOn) {
+                        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                    }
+                }
+
+                // X button: Increase shooter speed by 0.01 (capped)
+                if (x2 && !prevX2) {
+                    shooterSpeed = Math.min(MAX_SHOOTER_SPEED, shooterSpeed + 0.01);
+                    if (shootersOn) {
+                        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                    }
+                }
+
+                // Y button: Decrease shooter speed by 0.01
+                if (y2 && !prevY2) {
+                    shooterSpeed = Math.max(0.0, shooterSpeed - 0.01);
+                    if (shootersOn) {
+                        targetVelocity1 = MAX_VELOCITY * shooterSpeed;
+                        targetVelocity2 = MAX_VELOCITY * shooterSpeed;
+                    }
+                }
+            }
+
+            prevA2 = a2;
+            prevB2 = b2;
+            prevX2 = x2;
+            prevY2 = y2;
+
+            // =======================
+            // PID Control Loop
+            // =======================
+            double power1 = 0, power2 = 0;
+            double vel1 = 0, vel2 = 0;
+            double error1 = 0, error2 = 0;
+
+            if (shootersOn && targetVelocity1 > 0) {
+                vel1 = Math.abs(shooter1.getVelocity());
+                vel2 = Math.abs(shooter2.getVelocity());
+
+                double dt = pidTimer.seconds();
+                pidTimer.reset();
+
+                if (dt == 0 || dt > 0.1) dt = 0.02;
+
+                // SHOOTER 1 PID
+                error1 = targetVelocity1 - vel1;
+                double derivative1 = (error1 - lastError1) / dt;
+                integralSum1 += error1 * dt;
+                integralSum1 = Math.max(-500, Math.min(500, integralSum1));
+
+                power1 = (Kp * error1) + (Ki * integralSum1) + (Kd * derivative1);
+                power1 = Math.max(0, Math.min(1.0, power1));
+
+                lastError1 = error1;
+
+                // SHOOTER 2 PID
+                error2 = targetVelocity2 - vel2;
+                double derivative2 = (error2 - lastError2) / dt;
+                integralSum2 += error2 * dt;
+                integralSum2 = Math.max(-500, Math.min(500, integralSum2));
+
+                power2 = (Kp * error2) + (Ki * integralSum2) + (Kd * derivative2);
+                power2 = Math.max(0, Math.min(1.0, power2));
+
+                lastError2 = error2;
+
+                shooter1.setPower(power1);
+                shooter2.setPower(power2);
+            }
+
+            // =======================
+            // Telemetry
+            // =======================
+            telemetry.addData("Drive (LF RF LB RB)",
+                    "%.2f  %.2f  %.2f  %.2f",
+                    leftFront.getPower(), rightFront.getPower(),
+                    leftBack.getPower(), rightBack.getPower());
+
+            telemetry.addData("Intake",
+                    "%s (power=%.1f)",
+                    intakeState.name(), intake.getPower());
+
+            telemetry.addData("Gate", "Position=%.2f %s",
+                    gate.getPosition(),
+                    gateMoving ? "(PULSING)" : "");
+
+            if (tagDetected) {
+                telemetry.addData("Turret", "TRACKING TAG (Tx=%.2f, Power=%.2f)",
+                        llResult.getTx(), turretCmd);
+                telemetry.addData("AprilTag FOV", "%.2f%%", fovPercentage);
+            } else {
+                telemetry.addData("Turret", "IMU COMP (Yaw=%.1f°, ΔYaw=%.2f°, Power=%.2f)",
+                        currentYaw, yawChange, turretCmd);
+            }
+
+            telemetry.addLine();
+            telemetry.addData("Speed Mode", manualSpeedMode ? "MANUAL" : "AUTO (FOV)");
+            telemetry.addData("Shooters", "on=%s  speed=%.3f (MAX: %.2f)",
+                    shootersOn ? "YES" : "NO", shooterSpeed, MAX_SHOOTER_SPEED);
+            telemetry.addData("S1", "target=%.0f  actual=%.0f  pwr=%.2f",
+                    targetVelocity1, vel1, power1);
+            telemetry.addData("S2", "target=%.0f  actual=%.0f  pwr=%.2f",
+                    targetVelocity2, vel2, power2);
+
+            boolean atTarget = Math.abs(error1) < 100 && Math.abs(error2) < 100;
+            telemetry.addData("Ready", atTarget ? "YES ✓" : "NO");
+
+            telemetry.update();
+        }
+
+        limelight.stop();
+    }
+
+    /**
+     * Calculate shooter speed based on AprilTag FOV percentage using polynomial equation
+     * Formula: y = 0.0122547x^4 - 0.110119x^3 + 0.357647x^2 - 0.536579x + 0.832246
+     *
+     * NOTE: Result is NOT capped here - capping to MAX_SHOOTER_SPEED happens in calling code
+     *
+     * @param fovPercent AprilTag area as percentage of image (0-100)
+     * @return Shooter speed multiplier (0.0 to 1.0, may exceed MAX_SHOOTER_SPEED)
+     */
+    private double calculateShooterSpeed(double fovPercent) {
+        // Clamp FOV to valid range [0, 100]
+        double x = Math.max(MIN_FOV, Math.min(MAX_FOV, fovPercent));
+
+        // Calculate polynomial: y = c4*x^4 + c3*x^3 + c2*x^2 + c1*x + c0
+        double x2 = x * x;          // x^2
+        double x3 = x2 * x;         // x^3
+        double x4 = x3 * x;         // x^4
+
+        double speed = FOV_C4 * x4 + FOV_C3 * x3 + FOV_C2 * x2 + FOV_C1 * x + FOV_C0;
+
+        // Clamp result to valid range [0.0, 1.0]
+        return Math.max(0.0, Math.min(1.0, speed));
+    }
+
+    // Helper: apply intake power from current state
+    private void applyIntakePower() {
+        switch (intakeState) {
+            case OFF:
+                intake.setPower(0.0);
+                break;
+            case FORWARD:
+                intake.setPower(+INTAKE_POWER);
+                break;
+            case REVERSE:
+                intake.setPower(-INTAKE_POWER);
+                break;
+        }
+    }
+}
